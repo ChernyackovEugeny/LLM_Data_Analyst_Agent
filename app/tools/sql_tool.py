@@ -1,11 +1,8 @@
 from langchain_core.tools import tool
 from sqlalchemy import create_engine, text
 
+from app.database.database import engine
 from app.config import settings
-
-# Создаем engine один раз при импорте
-# pool_pre_ping проверяет живость соединения
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
 
 @tool
 def execute_sql_query(query: str) -> str:

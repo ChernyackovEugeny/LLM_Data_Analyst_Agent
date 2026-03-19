@@ -1,11 +1,30 @@
-fastapi
-uvicorn
-langchain
-langchain-openai
-langgraph
-pydantic
-pydantic-settings
-python-dotenv
-sqlalchemy
-psycopg2-binary  # Если используем PostgreSQL
-pandas           # Для анализа данных
+fastapi==0.119.1
+uvicorn[standard]==0.27.1
+
+# LangChain ecosystem
+langchain-core==1.2.20
+langchain==1.1.1
+
+langchain-openai==1.1.11
+
+langgraph==1.0.10
+langgraph-checkpoint==4.0.1
+langgraph-prebuilt==1.0.8
+
+pydantic>=2.7.4,<3.0.0
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+
+sqlalchemy==2.0.29
+psycopg2-binary==2.9.9
+
+pandas==2.2.1
+
+python-jose[cryptography]==3.3.0
+
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
+
+python-multipart==0.0.9
+
+email-validator==2.1.1
