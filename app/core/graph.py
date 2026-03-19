@@ -42,7 +42,7 @@ graph.set_entry_point('agent')
 
 graph.add_conditional_edges(
     'agent',
-    should_continue(),
+    should_continue,
     {
         'tools': 'tools',
         'end': END
