@@ -1,15 +1,50 @@
 import { useState, useRef, useEffect } from 'react';
-import { askAgent } from '../api';
+import { askAgentStream } from '../api';
 
 function Dashboard() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // Текст текущего шага агента, отображается во время загрузки вместо точек
+  const [statusText, setStatusText] = useState('');
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // --- Функция для обработки контента (Текст + Картинки) ---
+  const renderContent = (content) => {
+    // Регулярное выражение для поиска ссылок на картинки, которые генерирует агент
+    const urlPattern = /(http:\/\/localhost:8000\/static\/plots\/[^\s]+\.png)/g;
+    
+    // Разбиваем текст на части: текст -> ссылка -> текст
+    const parts = content.split(urlPattern);
+    
+    return parts.map((part, index) => {
+      // Если часть совпадает с URL картинки
+      if (part.match(urlPattern)) {
+        return (
+          <img 
+            key={index} 
+            src={part} 
+            alt="Analysis Plot" 
+            className="max-w-full h-auto rounded-lg shadow-md mt-2 border" 
+          />
+        );
+      }
+      // Иначе это просто текст
+      return <span key={index} className="whitespace-pre-wrap">{part}</span>;
+    });
+  };
+
+  // Подписи для каждого типа шага агента
+  const STATUS_LABELS = {
+    thinking:             '🤔 Агент анализирует вопрос...',
+    execute_sql_query:    '🔍 Выполняю SQL запрос...',
+    execute_python_code:  '🐍 Генерирую график...',
+    tool_result:          '✅ Обрабатываю результаты...',
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -18,16 +53,32 @@ function Dashboard() {
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
+    setStatusText(STATUS_LABELS.thinking);
 
     try {
-      const res = await askAgent(input);
-      const agentMessage = { role: 'agent', content: res.data.answer };
-      setMessages(prev => [...prev, agentMessage]);
+      await askAgentStream(input, (event) => {
+        if (event.type === 'thinking') {
+          setStatusText(STATUS_LABELS.thinking);
+        } else if (event.type === 'tool_call') {
+          // Показываем конкретный инструмент или универсальную подпись
+          setStatusText(STATUS_LABELS[event.tool] ?? `🔧 Вызов ${event.tool}...`);
+        } else if (event.type === 'tool_result') {
+          setStatusText(STATUS_LABELS.tool_result);
+        } else if (event.type === 'done') {
+          // Получили финальный ответ — добавляем в историю и снимаем загрузку
+          setMessages(prev => [...prev, { role: 'agent', content: event.answer }]);
+          setIsLoading(false);
+          setStatusText('');
+        } else if (event.type === 'error') {
+          setMessages(prev => [...prev, { role: 'agent', content: `Ошибка: ${event.message}` }]);
+          setIsLoading(false);
+          setStatusText('');
+        }
+      });
     } catch (err) {
-      const errorMessage = { role: 'agent', content: 'Ошибка соединения с сервером.' };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
+      setMessages(prev => [...prev, { role: 'agent', content: 'Ошибка соединения с сервером.' }]);
       setIsLoading(false);
+      setStatusText('');
     }
   };
 
@@ -43,6 +94,7 @@ function Dashboard() {
             </svg>
             <p className="text-lg font-medium">Начните диалог</p>
             <p className="text-sm">Например: "Какие 5 клиентов принесли больше всего прибыли?"</p>
+            <p className="text-sm mt-2">Или: "Нарисуй график распределения прибыли"</p>
           </div>
         )}
 
@@ -53,17 +105,22 @@ function Dashboard() {
                 ? 'bg-emerald-600 text-white rounded-br-none' 
                 : 'bg-white text-gray-800 border border-gray-100 rounded-bl-none'
             }`}>
-              <p className="whitespace-pre-wrap">{msg.content}</p>
+              {/* Используем функцию рендеринга здесь */}
+              <div>{renderContent(msg.content)}</div>
             </div>
           </div>
         ))}
 
+        {/* Индикатор загрузки: показывает текущий шаг агента вместо безликих точек */}
         {isLoading && (
           <div className="flex justify-start">
-            <div className="bg-white border border-gray-100 text-gray-500 px-5 py-3 rounded-2xl rounded-bl-none shadow-sm flex items-center space-x-1">
+            <div className="bg-white border border-gray-100 text-gray-500 px-5 py-3 rounded-2xl rounded-bl-none shadow-sm flex items-center space-x-2">
+              {/* Анимированный спиннер */}
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+              {/* Текст текущего шага, обновляется по мере работы агента */}
+              {statusText && <span className="text-sm ml-1">{statusText}</span>}
             </div>
           </div>
         )}

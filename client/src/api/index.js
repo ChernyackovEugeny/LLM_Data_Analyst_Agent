@@ -19,6 +19,21 @@ api.interceptors.request.use((config) => {
     return Promise.reject(error);
 });
 
+// Interceptor ОТВЕТА (обрабатывает ошибки)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // Если сервер вернул 401 (Unauthorized)
+    if (error.response && error.response.status === 401) {
+      // Удаляем токен
+      localStorage.removeItem('token');
+      // Перенаправляем на логин
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
 // --- Auth API ---
 export const signup = (email, password) => api.post('/auth/signup', { email, password });
 export const login = async (email, password) => {
@@ -35,3 +50,60 @@ export const login = async (email, password) => {
 
 // --- Agent API ---
 export const askAgent = (question) => api.post('/analyze', { question })
+
+// Стриминг прогресса агента через Server-Sent Events.
+// Используем fetch вместо EventSource, потому что EventSource не поддерживает
+// пользовательские заголовки — а нам нужен Authorization: Bearer <token>.
+//
+// onEvent вызывается для каждого полученного события, например:
+//   { type: 'thinking' }
+//   { type: 'tool_call', tool: 'execute_sql_query' }
+//   { type: 'done', answer: '...' }
+export const askAgentStream = (question, onEvent) => {
+    const token = localStorage.getItem('token')
+
+    return fetch(
+        `http://localhost:8000/api/v1/analyze/stream?question=${encodeURIComponent(question)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+    ).then(res => {
+        // Обрабатываем HTTP-ошибки до начала чтения потока.
+        // Без этой проверки при 401 код пытается читать тело ошибки как SSE-поток —
+        // строк "data:" в нём нет, onEvent("done") никогда не вызывается → бесконечная загрузка.
+        if (res.status === 401) {
+            // Токен истёк или невалиден — сбрасываем сессию и редиректим на логин
+            localStorage.removeItem('token')
+            window.location.href = '/login'
+            return
+        }
+        if (!res.ok) {
+            // Любая другая серверная ошибка — пробрасываем исключение,
+            // чтобы catch в Dashboard показал "Ошибка соединения с сервером."
+            throw new Error(`Ошибка сервера: ${res.status}`)
+        }
+
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+
+        // Рекурсивно читаем поток чанк за чанком
+        const pump = () => reader.read().then(({ done, value }) => {
+            if (done) return
+
+            // Декодируем байты в строку и разбиваем по строкам SSE-формата
+            // Каждое событие имеет вид: "data: {...}\n\n"
+            const text = decoder.decode(value)
+            text.split('\n').forEach(line => {
+                if (line.startsWith('data: ')) {
+                    try {
+                        onEvent(JSON.parse(line.slice(6)))
+                    } catch {
+                        // Игнорируем невалидный JSON (например, пустые keep-alive строки)
+                    }
+                }
+            })
+
+            return pump()
+        })
+
+        return pump()
+    })
+}

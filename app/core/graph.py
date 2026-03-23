@@ -2,13 +2,17 @@ from functools import partial
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
 
 from app.config import settings
+
 from app.core.state import AgentState
 from app.core.nodes import agent_node
 from app.core.edges import should_continue
 from app.core.prompts import get_agent_prompt
+
 from app.tools import execute_sql_query
+from app.tools.python_tool import execute_python_code
 
 # --- Инициализация ресурсов ---
 llm = ChatOpenAI(
@@ -18,7 +22,7 @@ llm = ChatOpenAI(
     temperature=0
 )
 
-tools = [execute_sql_query]
+tools = [execute_sql_query, execute_python_code]
 llm_with_tools = llm.bind_tools(tools)
 prompt_template = get_agent_prompt()
 
@@ -53,4 +57,5 @@ graph.add_conditional_edges(
 graph.add_edge("tools", "agent")
 
 # --- Компиляция ---
-app_graph = graph.compile()
+checkpointer = MemorySaver()
+app_graph = graph.compile(checkpointer=checkpointer)

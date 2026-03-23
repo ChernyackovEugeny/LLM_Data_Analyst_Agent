@@ -1,8 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import text
 from langchain_core.messages import HumanMessage
 from datetime import timedelta
+import json
 
 from app.database.database import engine, get_db
 from app.auth.auth import oauth2_scheme, get_password_hash, verify_password, create_access_token, decode_token
@@ -61,6 +63,75 @@ async def analyze_endpoint(
         print(f'Error during analysis: {e}')
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
     
+# --- Agent Stream Route ---
+
+@router.get('/analyze/stream')
+async def analyze_stream_endpoint(
+    question: str,
+    current_user: UserOut = Depends(get_current_user)
+):
+    """
+    SSE-эндпоинт для наблюдения за работой агента в реальном времени.
+    Использует LangGraph astream() с stream_mode='updates':
+    после каждого узла графа отдаёт JSON-событие с типом шага.
+
+    Формат событий:
+      {"type": "thinking"}                          — агент формирует ответ
+      {"type": "tool_call", "tool": "<имя>"}        — агент вызывает инструмент
+      {"type": "tool_result", "tool": "<имя>"}      — инструмент вернул результат
+      {"type": "done", "answer": "<текст>"}         — финальный ответ агента
+      {"type": "error", "message": "<текст>"}       — ошибка во время работы
+    """
+    async def event_generator():
+        # Каждый пользователь имеет свой thread_id — история сообщений изолирована
+        thread_id = f"user_{current_user.id}"
+        config = {"configurable": {"thread_id": thread_id}}
+        inputs = {"messages": [HumanMessage(content=question)]}
+        try:
+            # astream с mode="updates" даёт словарь {имя_узла: изменения_стейта}
+            # после каждого выполненного узла графа
+            async for update in app_graph.astream(inputs, config=config, stream_mode="updates"):
+                for node_name, state_update in update.items():
+
+                    if node_name == "agent":
+                        messages = state_update.get("messages", [])
+                        last = messages[-1] if messages else None
+
+                        # Всегда сначала сообщаем что агент обрабатывает запрос
+                        yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
+
+                        if last and getattr(last, "tool_calls", None):
+                            # Агент решил вызвать инструмент — сообщаем какой именно
+                            for tc in last.tool_calls:
+                                event = {"type": "tool_call", "tool": tc["name"]}
+                                yield f"data: {json.dumps(event)}\n\n"
+                        elif last and last.content:
+                            # Агент дал финальный текстовый ответ
+                            event = {"type": "done", "answer": last.content}
+                            yield f"data: {json.dumps(event)}\n\n"
+
+                    elif node_name == "tools":
+                        # Инструменты выполнились — сообщаем об этом
+                        messages = state_update.get("messages", [])
+                        for msg in messages:
+                            event = {
+                                "type": "tool_result",
+                                "tool": getattr(msg, "name", "unknown"),
+                            }
+                            yield f"data: {json.dumps(event)}\n\n"
+
+        except Exception as e:
+            print(f"Ошибка во время стриминга: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        # no-cache — браузер не должен кешировать поток
+        # X-Accel-Buffering: no — отключаем буферизацию в nginx (если он есть)
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 # --- Auth Routes ---
 
 @router.post('/auth/signup', response_model=UserOut)
