@@ -1,0 +1,31 @@
+# Виртуальное окружение Python — зависимости устанавливаются внутри образа через pip
+.venv/
+
+# Зависимости Node — устанавливаются внутри образа через npm install
+client/node_modules/
+
+# Кеш Python
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Git и служебные файлы
+.git/
+.gitignore
+.claude/
+
+# Логи uvicorn и фронтенда — не нужны в образе
+logs/
+
+# Графики — создаются в runtime, хранятся в volume
+static/plots/
+
+# .env содержит секреты — передаётся через docker-compose env_file, не копируется в образ
+.env
+.env.*
+
+# Документация и тестовые файлы
+*.md
+create_test_csv.py
+test_electronics_store.csv

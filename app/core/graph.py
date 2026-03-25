@@ -9,7 +9,6 @@ from app.config import settings
 from app.core.state import AgentState
 from app.core.nodes import agent_node
 from app.core.edges import should_continue
-from app.core.prompts import get_agent_prompt
 
 from app.tools import execute_sql_query
 from app.tools.python_tool import execute_python_code
@@ -24,14 +23,14 @@ llm = ChatOpenAI(
 
 tools = [execute_sql_query, execute_python_code]
 llm_with_tools = llm.bind_tools(tools)
-prompt_template = get_agent_prompt()
 
-# --- Подготовка функций узлов (Partial Application) ---
-# Превращаем функцию 3-х аргументов в функцию 1-го аргумента (state)
+# --- Подготовка узла агента ---
+# prompt_template больше не строится здесь — nodes.py делает это динамически
+# на каждый запрос, чтобы агент видел актуальную схему (включая CSV пользователя).
+# LangGraph сам инжектирует config в agent_node — partial связывает только llm.
 agent_node_runnable = partial(
     agent_node,
     llm=llm_with_tools,
-    prompt_template=prompt_template
 )
 
 tool_node_runnable = ToolNode(tools)

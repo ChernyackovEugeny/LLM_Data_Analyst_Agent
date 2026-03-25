@@ -1,16 +1,21 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import text
 from langchain_core.messages import HumanMessage
 from datetime import timedelta
 import json
+import io
+import pandas as pd
 
 from app.database.database import engine, get_db
 from app.auth.auth import oauth2_scheme, get_password_hash, verify_password, create_access_token, decode_token
-from app.models.schemas import UserCreate, UserLogin, Token, UserOut, AnalyzeRequest, AnalyzeResponse
+from app.models.schemas import UserCreate, UserLogin, Token, UserOut, AnalyzeRequest, AnalyzeResponse, UploadResponse
 from app.core.graph import app_graph
 from app.config import settings
+
+# Максимальный размер загружаемого CSV-файла — 10 МБ
+MAX_CSV_SIZE_BYTES = 10 * 1024 * 1024
 
 router = APIRouter()
 
@@ -36,9 +41,9 @@ async def analyze_endpoint(
     Принимает вопрос, возвращает ответ.
     """
     try:
-        # Используем ID юзера для памяти
+        # Используем ID юзера для памяти и для динамической схемы БД
         thread_id = f"user_{current_user.id}"
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id, "user_id": current_user.id}}
         
         # Формируем входящее сообщение
         # LangGraph ожидает список сообщений в state["messages"]
@@ -83,9 +88,10 @@ async def analyze_stream_endpoint(
       {"type": "error", "message": "<текст>"}       — ошибка во время работы
     """
     async def event_generator():
-        # Каждый пользователь имеет свой thread_id — история сообщений изолирована
+        # Каждый пользователь имеет свой thread_id — история сообщений изолирована.
+        # user_id передаётся в agent_node для формирования схемы БД с CSV-таблицей пользователя.
         thread_id = f"user_{current_user.id}"
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id, "user_id": current_user.id}}
         inputs = {"messages": [HumanMessage(content=question)]}
         try:
             # astream с mode="updates" даёт словарь {имя_узла: изменения_стейта}
@@ -131,6 +137,82 @@ async def analyze_stream_endpoint(
         # X-Accel-Buffering: no — отключаем буферизацию в nginx (если он есть)
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+# --- CSV Upload Route ---
+
+@router.post('/upload-csv', response_model=UploadResponse)
+async def upload_csv(
+    file: UploadFile = File(...),
+    current_user: UserOut = Depends(get_current_user)
+):
+    """
+    Загружает CSV-файл и сохраняет его как таблицу csv_u{user_id} в PostgreSQL.
+    Если таблица уже существует — полностью заменяется (вариант 4: один CSV на пользователя).
+    После загрузки агент сразу видит новую таблицу — перезапуск не нужен.
+    """
+
+    # Проверяем расширение файла
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail='Допускаются только файлы формата .csv')
+
+    # Читаем содержимое файла целиком
+    contents = await file.read()
+
+    # Проверяем размер — защита от слишком больших файлов
+    if len(contents) > MAX_CSV_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail='Файл слишком большой. Максимальный размер — 10 МБ.')
+
+    # Пробуем декодировать: сначала UTF-8, затем Windows-1252 (cp1252)
+    # Это покрывает большинство CSV из Excel и других Windows-программ
+    try:
+        text_data = contents.decode('utf-8')
+    except UnicodeDecodeError:
+        try:
+            text_data = contents.decode('cp1252')
+        except UnicodeDecodeError:
+            raise HTTPException(
+                status_code=422,
+                detail='Не удалось определить кодировку файла. Используйте UTF-8 или Windows-1252.'
+            )
+
+    # Парсим CSV через pandas
+    try:
+        df = pd.read_csv(io.StringIO(text_data))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f'Ошибка разбора CSV: {e}')
+
+    if df.empty:
+        raise HTTPException(status_code=422, detail='Файл CSV пуст или не содержит данных.')
+
+    # Sanitize имён колонок: пробелы → _, дефисы → _, строчные буквы
+    # Без этого PostgreSQL может отказать или имена станут неудобными в SQL
+    df.columns = [
+        col.strip().lower().replace(' ', '_').replace('-', '_')
+        for col in df.columns
+    ]
+
+    # Имя таблицы привязано к пользователю — изоляция данных между пользователями
+    table_name = f"csv_u{current_user.id}"
+
+    # Записываем в PostgreSQL: if_exists='replace' = DROP IF EXISTS + CREATE + INSERT
+    try:
+        df.to_sql(
+            name=table_name,
+            con=engine,           # engine уже импортирован выше
+            if_exists='replace',  # заменяем старую таблицу целиком
+            index=False,          # не сохраняем индекс pandas как отдельную колонку
+            schema='public'
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Ошибка записи в базу данных: {e}')
+
+    return UploadResponse(
+        table_name=table_name,
+        columns=list(df.columns),
+        row_count=len(df),
+        message=f'Файл "{file.filename}" успешно загружен. Таблица {table_name} создана.'
+    )
+
 
 # --- Auth Routes ---
 

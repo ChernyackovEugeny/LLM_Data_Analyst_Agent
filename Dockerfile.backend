@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+WORKDIR /app
+
+# Сначала копируем только зависимости — слой кешируется пока requirements.txt не изменится
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем исходный код приложения
+COPY app/ ./app/
+COPY main.py .
+
+# Создаём директорию для графиков заранее, чтобы volume mount не конфликтовал
+# со временем создания директории внутри app.py
+RUN mkdir -p static/plots
+
+# В контейнере hot-reload не нужен — запускаем uvicorn напрямую без --reload
+CMD ["uvicorn", "app.app:app", "--host", "0.0.0.0", "--port", "8000"]

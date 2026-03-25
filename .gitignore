@@ -208,3 +208,17 @@ __marimo__/
 
 # Claude
 .claude
+
+# Frontend
+client/node_modules/
+client/dist/
+
+# Logs
+logs/
+
+# Generated plots (runtime data)
+static/plots/
+
+# Test / dev files
+create_test_csv.py
+test_electronics_store.csv

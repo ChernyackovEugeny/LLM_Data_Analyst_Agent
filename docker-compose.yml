@@ -1,4 +1,5 @@
-services: 
+services:
+
   db:
     image: postgres:16-alpine
     container_name: llm_agent_db
@@ -8,9 +9,44 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: analyst_db
     ports:
-      - "5432:5432"
+      - "5432:5432"   # открыт для удобства подключения через DBeaver / pgAdmin
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Ждём пока PostgreSQL готов принимать соединения
+      test: ["CMD-SHELL", "pg_isready -U admin -d analyst_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: llm_agent_backend
+    restart: always
+    env_file: .env          # DEEPSEEK_API_KEY, SECRET_KEY и другие секреты из .env
+    environment:
+      # Переопределяем DATABASE_URL: в Docker PostgreSQL доступен по имени сервиса "db",
+      # а не "localhost" как в локальной разработке
+      DATABASE_URL: postgresql+psycopg2://admin:password@db:5432/analyst_db
+    volumes:
+      - plots_data:/app/static/plots    # графики сохраняются между перезапусками контейнера
+    depends_on:
+      db:
+        condition: service_healthy      # бэкенд стартует только после того как postgres готов
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: llm_agent_frontend
+    restart: always
+    ports:
+      - "80:80"             # приложение доступно на http://localhost
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:
+  plots_data:
