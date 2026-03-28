@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Cookie, Response
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import text
@@ -9,8 +9,8 @@ import io
 import pandas as pd
 
 from app.database.database import engine, get_db
-from app.auth.auth import oauth2_scheme, get_password_hash, verify_password, create_access_token, decode_token
-from app.models.schemas import UserCreate, UserLogin, Token, UserOut, AnalyzeRequest, AnalyzeResponse, UploadResponse
+from app.auth.auth import get_password_hash, verify_password, create_access_token, decode_token
+from app.models.schemas import UserCreate, UserLogin, UserOut, AnalyzeRequest, AnalyzeResponse, UploadResponse
 from app.core.graph import app_graph
 from app.config import settings
 
@@ -20,11 +20,15 @@ MAX_CSV_SIZE_BYTES = 10 * 1024 * 1024
 router = APIRouter()
 
 # --- Dependency ---
-def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)):
-    payload = decode_token(token)
+# Читаем токен из HttpOnly cookie "access_token".
+# Cookie(default=None): если cookie отсутствует — возвращаем 401, а не 422 (validation error).
+def get_current_user(access_token: str = Cookie(default=None), db=Depends(get_db)):
+    if not access_token:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    payload = decode_token(access_token)
     if payload is None:
         raise HTTPException(status_code=401, detail='Could not validate credentials')
-    
+
     email = payload.get("sub")
     user_id = payload.get("user_id")
 
@@ -238,28 +242,54 @@ def signup(user_data: UserCreate, db=Depends(get_db)):
     new_user = result.fetchone()
     return UserOut(id=new_user[0], email=new_user[1])
 
-@router.post('/auth/login', response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db=Depends(get_db)):
+@router.post('/auth/login')
+def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db=Depends(get_db)):
     """
     Эндпоинт совместим со Swagger UI (форма) и обычными запросами.
     form_data.username содержит email пользователя.
+    Токен устанавливается как HttpOnly cookie — не возвращается в теле ответа.
     """
     email = form_data.username
     password = form_data.password
 
     result = db.execute(
-        text('SELECT id, email, hashed_password FROM users WHERE email = :email'), 
+        text('SELECT id, email, hashed_password FROM users WHERE email = :email'),
         {'email': email}
     )
     user = result.fetchone()
 
     if not user or not verify_password(password, user[2]):
         raise HTTPException(status_code=401, detail='Incorrect email or password')
-    
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+
     access_token = create_access_token(
         data={'sub': user[1], 'user_id': user[0]},
-        expires_delta=access_token_expires
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
-    return {'access_token': access_token, 'token_type': 'bearer'}
+    # HttpOnly: JS не может прочитать cookie → XSS не украдёт токен.
+    # SameSite=Lax: браузер не отправляет cookie на cross-site POST → CSRF-защита.
+    # Secure: только HTTPS (False в dev, настраивается через COOKIE_SECURE в .env).
+    # max_age: браузер автоматически удаляет cookie после истечения токена.
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return {"message": "Login successful"}
+
+
+@router.post('/auth/logout')
+def logout(response: Response):
+    # JS не может удалить HttpOnly cookie — только сервер может.
+    # delete_cookie ставит Max-Age=0: браузер немедленно удаляет cookie.
+    response.delete_cookie(key="access_token", samesite="lax")
+    return {"message": "Logged out"}
+
+
+@router.get('/auth/me', response_model=UserOut)
+def get_me(current_user: UserOut = Depends(get_current_user)):
+    """Проверка состояния аутентификации. Используется фронтендом при загрузке страницы."""
+    return current_user

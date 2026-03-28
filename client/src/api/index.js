@@ -8,31 +8,21 @@ const api = axios.create({
     headers: {
         'Content-Type': 'application/json',
     },
+    // withCredentials=true: axios отправляет HttpOnly cookie в cross-origin запросах
+    // (нужно для dev: Vite на 5173 → backend на 8000 через proxy).
+    // В Docker всё same-origin — куки отправляются автоматически и без этого флага,
+    // но явное указание не мешает.
+    withCredentials: true,
 });
 
-// Интерцептор: автоматически добавляет токен авторизации в каждый запрос
-api.interceptors.request.use((config) => {
-    const token = localStorage.getItem('token');
-    if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-}, (error) => {
-    return Promise.reject(error);
-});
-
-// Interceptor ОТВЕТА (обрабатывает ошибки)
+// Interceptor ОТВЕТА: при 401 редиректим на логин.
+// Исключение: /auth/ эндпоинты — там 401 = неверный пароль, а не истёкший токен.
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
-      // Не делаем редирект для /auth/login и /auth/signup:
-      // там 401 = неверный пароль, а не истёкшая сессия.
-      // Без этой проверки пользователь при ошибке входа видит
-      // не сообщение "Неверный пароль", а пустую форму после перезагрузки.
       const isAuthEndpoint = error.config?.url?.includes('/auth/');
       if (!isAuthEndpoint) {
-        localStorage.removeItem('token');
         window.location.href = '/login';
       }
     }
@@ -54,6 +44,13 @@ export const login = async (email, password) => {
     return response.data;
 };
 
+// Проверка состояния аутентификации — вызывается при загрузке приложения.
+// 200 = токен валидный, 401 = не залогинен или токен истёк.
+export const checkAuth = () => api.get('/auth/me');
+
+// Logout: сервер удаляет HttpOnly cookie (JS не может это сделать сам).
+export const logout = () => api.post('/auth/logout');
+
 // --- Agent API ---
 export const askAgent = (question) => api.post('/analyze', { question })
 
@@ -71,31 +68,24 @@ export const uploadCsv = (file) => {
 
 // Стриминг прогресса агента через Server-Sent Events.
 // Используем fetch вместо EventSource, потому что EventSource не поддерживает
-// пользовательские заголовки — а нам нужен Authorization: Bearer <token>.
+// пользовательские заголовки.
+// Cookie отправляется браузером автоматически (same-origin / credentials: 'same-origin').
 //
 // onEvent вызывается для каждого полученного события, например:
 //   { type: 'thinking' }
 //   { type: 'tool_call', tool: 'execute_sql_query' }
 //   { type: 'done', answer: '...' }
 export const askAgentStream = (question, onEvent) => {
-    const token = localStorage.getItem('token')
-
     return fetch(
         `/api/v1/analyze/stream?question=${encodeURIComponent(question)}`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        { credentials: 'same-origin' }  // cookie отправляется автоматически
     ).then(res => {
         // Обрабатываем HTTP-ошибки до начала чтения потока.
-        // Без этой проверки при 401 код пытается читать тело ошибки как SSE-поток —
-        // строк "data:" в нём нет, onEvent("done") никогда не вызывается → бесконечная загрузка.
         if (res.status === 401) {
-            // Токен истёк или невалиден — сбрасываем сессию и редиректим на логин
-            localStorage.removeItem('token')
             window.location.href = '/login'
             return
         }
         if (!res.ok) {
-            // Любая другая серверная ошибка — пробрасываем исключение,
-            // чтобы catch в Dashboard показал "Ошибка соединения с сервером."
             throw new Error(`Ошибка сервера: ${res.status}`)
         }
 

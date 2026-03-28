@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
+    # --- CORS ---
+    # pydantic-settings парсит list[str] из .env как JSON-массив:
+    #   ALLOWED_ORIGINS=["http://localhost","http://localhost:5173"]
+    # Дефолт покрывает: Docker/nginx (порт 80) + Vite dev server (5173).
+    ALLOWED_ORIGINS: list[str] = ["http://localhost", "http://localhost:5173", "http://localhost:3000"]
+
+    # --- HttpOnly Cookie ---
+    # True = cookie передаётся только по HTTPS (production).
+    # False = разрешаем HTTP (локальная разработка).
+    # В production с HTTPS поставить COOKIE_SECURE=true в .env.
+    COOKIE_SECURE: bool = False
+
     # --- Python Sandbox (python_tool.py) ---
     # True = запускать код в Docker-контейнере (production, docker-compose).
     # False = subprocess fallback (локальная разработка без Docker Compose).

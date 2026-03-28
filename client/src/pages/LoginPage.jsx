@@ -13,8 +13,8 @@ function LoginPage({ setIsAuth }) {
     setError('');
     
     try {
-      const data = await login(email, password);
-      localStorage.setItem('token', data.access_token);
+      await login(email, password);
+      // Токен устанавливается сервером как HttpOnly cookie — фронтенд его не получает.
       setIsAuth(true);
       navigate('/dashboard');
     } catch (err) {

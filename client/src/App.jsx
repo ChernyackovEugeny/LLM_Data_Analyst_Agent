@@ -1,37 +1,41 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import Dashboard from './pages/Dashboard';
-
-// Проверяет что токен существует И ещё не истёк.
-// JWT содержит поле exp (Unix timestamp) прямо в base64-payload.
-// Без этой проверки пользователь с просроченным токеном видит dashboard,
-// а не форму входа — потому что localStorage.getItem('token') всё ещё возвращает значение.
-function isTokenValid() {
-  const token = localStorage.getItem('token');
-  if (!token) return false;
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    return payload.exp * 1000 > Date.now();
-  } catch {
-    return false;
-  }
-}
+import { checkAuth, logout as logoutApi } from './api';
 
 function App() {
-  const [isAuth, setIsAuth] = useState(isTokenValid);
+  // null = загрузка (идёт запрос к /auth/me)
+  // true = аутентифицирован
+  // false = не аутентифицирован
+  const [isAuth, setIsAuth] = useState(null);
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
+  useEffect(() => {
+    // При загрузке приложения проверяем валидность HttpOnly cookie через сервер.
+    // JS не может прочитать HttpOnly cookie напрямую — только сервер знает есть ли он
+    // и не истёк ли токен. /auth/me: 200 = валидный токен, 401 = нет/истёк.
+    checkAuth()
+      .then(() => setIsAuth(true))
+      .catch(() => setIsAuth(false));
+  }, []);
+
+  const handleLogout = async () => {
+    // JS не может удалить HttpOnly cookie — нужен серверный запрос.
+    // POST /auth/logout устанавливает Max-Age=0 → браузер удаляет cookie.
+    await logoutApi();
     setIsAuth(false);
     window.location.href = '/login';
   };
 
+  // Пока идёт checkAuth (~10-20ms) — показываем пустой экран.
+  // Мелькания нет: round-trip на локалке незаметен.
+  if (isAuth === null) return null;
+
   return (
     <Router>
       <div className="min-h-screen bg-gray-50 font-sans text-gray-900 antialiased">
-        
+
         {/* Top Navigation Bar */}
         <header className="w-full bg-white border-b border-gray-200 sticky top-0 z-50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -40,15 +44,15 @@ function App() {
                 LLM Agent
               </Link>
             </div>
-            
+
             <div className="flex items-center space-x-4">
               {isAuth ? (
                 <>
                   <Link to="/dashboard" className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
                     Dashboard
                   </Link>
-                  <button 
-                    onClick={handleLogout} 
+                  <button
+                    onClick={handleLogout}
                     className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                   >
                     Log out
@@ -59,8 +63,8 @@ function App() {
                   <Link to="/login" className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
                     Log in
                   </Link>
-                  <Link 
-                    to="/register" 
+                  <Link
+                    to="/register"
                     className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-sm"
                   >
                     Sign up
@@ -77,9 +81,9 @@ function App() {
             <Route path="/" element={isAuth ? <Navigate to="/dashboard" /> : <PublicHome />} />
             <Route path="/login" element={<LoginPage setIsAuth={setIsAuth} />} />
             <Route path="/register" element={<RegisterPage />} />
-            <Route 
-              path="/dashboard" 
-              element={isAuth ? <Dashboard /> : <Navigate to="/login" />} 
+            <Route
+              path="/dashboard"
+              element={isAuth ? <Dashboard /> : <Navigate to="/login" />}
             />
           </Routes>
         </main>
@@ -99,14 +103,14 @@ function PublicHome() {
           Задавайте вопросы на естественном языке и получайте ответы, графики и SQL-запросы мгновенно.
         </p>
         <div className="flex justify-center gap-4">
-          <Link 
-            to="/register" 
+          <Link
+            to="/register"
             className="px-6 py-3 text-base font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all shadow-lg hover:shadow-emerald-200"
           >
             Начать бесплатно
           </Link>
-          <Link 
-            to="/login" 
+          <Link
+            to="/login"
             className="px-6 py-3 text-base font-semibold text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-xl transition-all"
           >
             Уже есть аккаунт

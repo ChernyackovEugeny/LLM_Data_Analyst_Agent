@@ -24,10 +24,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Настройка CORS (разрешаем запросы с фронтендов)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
-    allow_credentials=True,
-    allow_methods=['*'],
-    allow_headers=['*']
+    allow_origins=settings.ALLOWED_ORIGINS,  # конкретные origins из config (не wildcard)
+    allow_credentials=True,                   # нужно для HttpOnly cookie в cross-origin dev
+    allow_methods=["GET", "POST"],            # только методы которые реально используются
+    allow_headers=["Content-Type"],           # Authorization header больше не нужен (cookie)
 )
 
 # Подключаем роуты
