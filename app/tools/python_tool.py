@@ -177,6 +177,7 @@ def _run_in_sandbox(code: str) -> str:
             mem_limit="512m",
             nano_cpus=500_000_000,
             network_disabled=True,
+            user="root",
             detach=True,
             remove=False,
             # env= не передаём: Docker по умолчанию даёт пустое окружение.

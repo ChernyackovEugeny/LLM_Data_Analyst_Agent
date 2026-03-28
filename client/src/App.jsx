@@ -34,38 +34,37 @@ function App() {
 
   return (
     <Router>
-      <div className="min-h-screen bg-gray-50 font-sans text-gray-900 antialiased">
+      {/* h-screen + overflow-hidden: приложение строго в рамках viewport, без внешнего скролла */}
+      <div className="h-screen flex flex-col overflow-hidden bg-gray-50 font-sans text-gray-900 antialiased">
 
         {/* Top Navigation Bar */}
-        <header className="w-full bg-white border-b border-gray-200 sticky top-0 z-50">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-            <div className="flex items-center">
-              <Link to="/" className="text-xl font-bold text-gray-900 hover:text-emerald-600 transition-colors">
-                LLM Agent
-              </Link>
-            </div>
+        <header className="flex-shrink-0 w-full bg-white border-b border-gray-200 z-50">
+          <div className="px-6 h-16 flex items-center justify-between">
+            <Link to="/" className="text-xl font-bold text-gray-900 hover:text-emerald-600 transition-colors">
+              LLM Agent
+            </Link>
 
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-3">
               {isAuth ? (
                 <>
-                  <Link to="/dashboard" className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
+                  <Link to="/dashboard" className="text-sm font-medium text-gray-500 hover:text-gray-900 transition-colors">
                     Dashboard
                   </Link>
                   <button
                     onClick={handleLogout}
-                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                    className="px-4 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                   >
                     Log out
                   </button>
                 </>
               ) : (
                 <>
-                  <Link to="/login" className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
+                  <Link to="/login" className="text-sm font-medium text-gray-500 hover:text-gray-900 transition-colors">
                     Log in
                   </Link>
                   <Link
                     to="/register"
-                    className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-sm"
+                    className="px-4 py-1.5 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors"
                   >
                     Sign up
                   </Link>
@@ -75,8 +74,8 @@ function App() {
           </div>
         </header>
 
-        {/* Main Content Area */}
-        <main className="flex-1">
+        {/* Main Content Area — flex-1 + overflow-hidden: заполняет оставшуюся высоту */}
+        <main className="flex-1 overflow-hidden">
           <Routes>
             <Route path="/" element={isAuth ? <Navigate to="/dashboard" /> : <PublicHome />} />
             <Route path="/login" element={<LoginPage setIsAuth={setIsAuth} />} />

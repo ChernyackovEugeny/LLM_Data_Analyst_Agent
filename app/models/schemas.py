@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
+from datetime import datetime
 
 
 # --- Auth Models ---
@@ -29,6 +30,17 @@ class AnalyzeResponse(BaseModel):
     """Модель ответа сервера"""
     answer: str = Field(..., description='Ответ агента')
 
+
+# --- Chat Models ---
+class ChatOut(BaseModel):
+    id: int
+    title: str
+    created_at: datetime
+
+class MessageOut(BaseModel):
+    role: str      # 'user' | 'agent'
+    content: str
+    created_at: datetime
 
 # --- CSV Upload ---
 class UploadResponse(BaseModel):

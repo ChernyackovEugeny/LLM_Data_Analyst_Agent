@@ -15,14 +15,23 @@ const api = axios.create({
     withCredentials: true,
 });
 
-// Interceptor ОТВЕТА: при 401 редиректим на логин.
-// Исключение: /auth/ эндпоинты — там 401 = неверный пароль, а не истёкший токен.
+// Interceptor ОТВЕТА: при 401 пробуем обновить access_token через refresh endpoint.
+// Если refresh тоже не помог — редиректим на /login.
+// _retry флаг на error.config предотвращает бесконечный цикл повторов.
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response && error.response.status === 401) {
-      const isAuthEndpoint = error.config?.url?.includes('/auth/');
-      if (!isAuthEndpoint) {
+  async (error) => {
+    const isAuthEndpoint = error.config?.url?.includes('/auth/');
+    if (error.response?.status === 401 && !isAuthEndpoint) {
+      if (!error.config._retry) {
+        error.config._retry = true;
+        try {
+          await api.post('/auth/refresh');
+          return api(error.config);
+        } catch {
+          window.location.href = '/login';
+        }
+      } else {
         window.location.href = '/login';
       }
     }
@@ -48,7 +57,7 @@ export const login = async (email, password) => {
 // 200 = токен валидный, 401 = не залогинен или токен истёк.
 export const checkAuth = () => api.get('/auth/me');
 
-// Logout: сервер удаляет HttpOnly cookie (JS не может это сделать сам).
+// Logout: сервер удаляет оба HttpOnly cookie (access_token + refresh_token).
 export const logout = () => api.post('/auth/logout');
 
 // --- Agent API ---
@@ -66,6 +75,12 @@ export const uploadCsv = (file) => {
     })
 }
 
+// --- Chat API ---
+export const createChat = () => api.post('/chats');
+export const listChats = () => api.get('/chats');
+export const deleteChat = (chatId) => api.delete(`/chats/${chatId}`);
+export const getChatMessages = (chatId) => api.get(`/chats/${chatId}/messages`);
+
 // Стриминг прогресса агента через Server-Sent Events.
 // Используем fetch вместо EventSource, потому что EventSource не поддерживает
 // пользовательские заголовки.
@@ -75,43 +90,51 @@ export const uploadCsv = (file) => {
 //   { type: 'thinking' }
 //   { type: 'tool_call', tool: 'execute_sql_query' }
 //   { type: 'done', answer: '...' }
-export const askAgentStream = (question, onEvent) => {
-    return fetch(
-        `/api/v1/analyze/stream?question=${encodeURIComponent(question)}`,
-        { credentials: 'same-origin' }  // cookie отправляется автоматически
-    ).then(res => {
-        // Обрабатываем HTTP-ошибки до начала чтения потока.
-        if (res.status === 401) {
-            window.location.href = '/login'
-            return
+export const askAgentStream = async (chatId, question, onEvent) => {
+    const url = `/api/v1/analyze/stream?chat_id=${chatId}&question=${encodeURIComponent(question)}`;
+
+    const makeRequest = () => fetch(url, { credentials: 'same-origin' });
+
+    let res = await makeRequest();
+
+    // При 401 пробуем обновить токен и повторить запрос (SSE использует fetch, не axios)
+    if (res.status === 401) {
+        try {
+            await api.post('/auth/refresh');
+            res = await makeRequest();
+        } catch {
+            window.location.href = '/login';
+            return;
         }
-        if (!res.ok) {
-            throw new Error(`Ошибка сервера: ${res.status}`)
-        }
+    }
 
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
+    // Обрабатываем HTTP-ошибки до начала чтения потока.
+    if (!res.ok) {
+        throw new Error(`Ошибка сервера: ${res.status}`)
+    }
 
-        // Рекурсивно читаем поток чанк за чанком
-        const pump = () => reader.read().then(({ done, value }) => {
-            if (done) return
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
 
-            // Декодируем байты в строку и разбиваем по строкам SSE-формата
-            // Каждое событие имеет вид: "data: {...}\n\n"
-            const text = decoder.decode(value)
-            text.split('\n').forEach(line => {
-                if (line.startsWith('data: ')) {
-                    try {
-                        onEvent(JSON.parse(line.slice(6)))
-                    } catch {
-                        // Игнорируем невалидный JSON (например, пустые keep-alive строки)
-                    }
+    // Рекурсивно читаем поток чанк за чанком
+    const pump = () => reader.read().then(({ done, value }) => {
+        if (done) return
+
+        // Декодируем байты в строку и разбиваем по строкам SSE-формата
+        // Каждое событие имеет вид: "data: {...}\n\n"
+        const text = decoder.decode(value)
+        text.split('\n').forEach(line => {
+            if (line.startsWith('data: ')) {
+                try {
+                    onEvent(JSON.parse(line.slice(6)))
+                } catch {
+                    // Игнорируем невалидный JSON (например, пустые keep-alive строки)
                 }
-            })
-
-            return pump()
+            }
         })
 
         return pump()
     })
+
+    return pump()
 }

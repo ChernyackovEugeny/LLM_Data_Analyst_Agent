@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     # False = разрешаем HTTP (локальная разработка).
     # В production с HTTPS поставить COOKIE_SECURE=true в .env.
     COOKIE_SECURE: bool = False
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # --- Python Sandbox (python_tool.py) ---
     # True = запускать код в Docker-контейнере (production, docker-compose).

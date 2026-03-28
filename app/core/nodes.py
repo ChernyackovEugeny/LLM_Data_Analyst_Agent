@@ -1,8 +1,12 @@
+import logging
+
 from langchain_core.runnables import RunnableConfig
 
 from app.core.state import AgentState
 from app.core.prompts import build_agent_prompt
 from app.tools.schemas import get_database_schema
+
+logger = logging.getLogger(__name__)
 
 
 def agent_node(state: AgentState, llm, config: RunnableConfig):
@@ -28,19 +32,13 @@ def agent_node(state: AgentState, llm, config: RunnableConfig):
     # Формируем полный список сообщений для LLM
     messages = prompt_template.invoke(state)
 
-    # Логируем что отправляем в LLM
-    print("\n========== ЗАПРОС К LLM ==========")
+    logger.debug("Запрос к LLM: %d сообщений", len(messages.messages))
     for msg in messages.messages:
-        print(f"[{msg.__class__.__name__}]: {msg.content[:300]}")
-    print("===================================\n")
+        logger.debug("[%s]: %s", msg.__class__.__name__, msg.content[:300])
 
     # Вызываем LLM с привязанными инструментами
     response = llm.invoke(messages)
 
-    # Логируем что LLM ответил
-    print("\n========== ОТВЕТ LLM ==========")
-    print(f"content: {response.content}")
-    print(f"tool_calls: {response.tool_calls}")
-    print("================================\n")
+    logger.debug("Ответ LLM: content=%s tool_calls=%s", response.content[:200], response.tool_calls)
 
     return {'messages': [response]}

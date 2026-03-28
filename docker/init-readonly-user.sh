@@ -33,6 +33,12 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     END
     \$\$;
 
+    -- Синхронизируем пароль с текущим значением READONLY_DB_PASSWORD.
+    -- Это нужно при повторном запуске на существующем volume: пользователь
+    -- уже создан (IF NOT EXISTS пропускает CREATE), но пароль в .env мог
+    -- измениться — ALTER USER обновляет его идемпотентно.
+    ALTER USER analyst_readonly WITH PASSWORD '$READONLY_DB_PASSWORD';
+
     -- Разрешить подключение к базе данных.
     -- Без CONNECT аутентификация проходит, но PostgreSQL отклоняет
     -- соединение с "permission denied for database".

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Cookie, Response
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -8,9 +10,11 @@ import json
 import io
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 from app.database.database import engine, get_db
-from app.auth.auth import get_password_hash, verify_password, create_access_token, decode_token
-from app.models.schemas import UserCreate, UserLogin, UserOut, AnalyzeRequest, AnalyzeResponse, UploadResponse
+from app.auth.auth import get_password_hash, verify_password, create_access_token, create_refresh_token, decode_token
+from app.models.schemas import UserCreate, UserLogin, UserOut, AnalyzeRequest, AnalyzeResponse, UploadResponse, ChatOut, MessageOut
 from app.core import graph as graph_module
 from app.config import settings
 
@@ -48,7 +52,7 @@ async def analyze_endpoint(
         # Используем ID юзера для памяти и для динамической схемы БД
         thread_id = f"user_{current_user.id}"
         config = {"configurable": {"thread_id": thread_id, "user_id": current_user.id}}
-        
+
         # Формируем входящее сообщение
         # LangGraph ожидает список сообщений в state["messages"]
         inputs = {
@@ -56,8 +60,8 @@ async def analyze_endpoint(
         }
 
         # Запускаем граф агента
-        # invoke ждет завершения всего цикла (Agent -> Tool -> Agent -> END)
-        result = graph_module.app_graph.invoke(inputs, config=config)
+        # ainvoke ждет завершения всего цикла (Agent -> Tool -> Agent -> END)
+        result = await graph_module.app_graph.ainvoke(inputs, config=config)
 
         # Извлекаем ответ
         # После завершения работы последнее сообщение в списке — это ответ AI
@@ -68,21 +72,21 @@ async def analyze_endpoint(
         return AnalyzeResponse(answer=answer_content)
 
     except Exception as e:
-        # Логируем ошибку
-        print(f'Error during analysis: {e}')
+        logger.exception("Ошибка во время синхронного анализа")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    
+
 # --- Agent Stream Route ---
 
 @router.get('/analyze/stream')
 async def analyze_stream_endpoint(
     question: str,
-    current_user: UserOut = Depends(get_current_user)
+    chat_id: int,
+    current_user: UserOut = Depends(get_current_user),
+    db=Depends(get_db)
 ):
     """
     SSE-эндпоинт для наблюдения за работой агента в реальном времени.
-    Использует LangGraph astream() с stream_mode='updates':
-    после каждого узла графа отдаёт JSON-событие с типом шага.
+    Принимает chat_id — история изолирована по чату, сообщения сохраняются в БД.
 
     Формат событий:
       {"type": "thinking"}                          — агент формирует ответ
@@ -91,12 +95,37 @@ async def analyze_stream_endpoint(
       {"type": "done", "answer": "<текст>"}         — финальный ответ агента
       {"type": "error", "message": "<текст>"}       — ошибка во время работы
     """
+    # Проверяем что чат принадлежит пользователю
+    row = db.execute(
+        text("SELECT id, title FROM chats WHERE id = :cid AND user_id = :uid"),
+        {"cid": chat_id, "uid": current_user.id}
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    chat_title = row[1]
+
+    # Сохраняем вопрос пользователя
+    db.execute(
+        text("INSERT INTO messages (chat_id, role, content) VALUES (:cid, 'user', :content)"),
+        {"cid": chat_id, "content": question}
+    )
+    # Auto-title: если это первое сообщение — обновляем заголовок чата
+    if chat_title == 'Новый чат':
+        title = question[:50] + ('...' if len(question) > 50 else '')
+        db.execute(
+            text("UPDATE chats SET title = :title WHERE id = :cid"),
+            {"title": title, "cid": chat_id}
+        )
+    db.commit()
+
     async def event_generator():
-        # Каждый пользователь имеет свой thread_id — история сообщений изолирована.
+        # thread_id привязан к чату — каждый чат имеет независимую историю LangGraph.
         # user_id передаётся в agent_node для формирования схемы БД с CSV-таблицей пользователя.
-        thread_id = f"user_{current_user.id}"
+        thread_id = f"chat_{chat_id}"
         config = {"configurable": {"thread_id": thread_id, "user_id": current_user.id}}
         inputs = {"messages": [HumanMessage(content=question)]}
+        final_answer = ""
         try:
             # astream с mode="updates" даёт словарь {имя_узла: изменения_стейта}
             # после каждого выполненного узла графа
@@ -116,7 +145,8 @@ async def analyze_stream_endpoint(
                                 event = {"type": "tool_call", "tool": tc["name"]}
                                 yield f"data: {json.dumps(event)}\n\n"
                         elif last and last.content:
-                            # Агент дал финальный текстовый ответ
+                            # Агент дал финальный текстовый ответ — запоминаем для сохранения
+                            final_answer = last.content
                             event = {"type": "done", "answer": last.content}
                             yield f"data: {json.dumps(event)}\n\n"
 
@@ -131,8 +161,16 @@ async def analyze_stream_endpoint(
                             yield f"data: {json.dumps(event)}\n\n"
 
         except Exception as e:
-            print(f"Ошибка во время стриминга: {e}")
+            logger.exception("Ошибка во время стриминга")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            # Сохраняем финальный ответ агента после завершения стрима
+            if final_answer:
+                db.execute(
+                    text("INSERT INTO messages (chat_id, role, content) VALUES (:cid, 'agent', :content)"),
+                    {"cid": chat_id, "content": final_answer}
+                )
+                db.commit()
 
     return StreamingResponse(
         event_generator(),
@@ -218,6 +256,66 @@ async def upload_csv(
     )
 
 
+# --- Chat Routes ---
+
+@router.post('/chats', response_model=ChatOut)
+def create_chat(current_user: UserOut = Depends(get_current_user), db=Depends(get_db)):
+    result = db.execute(
+        text("INSERT INTO chats (user_id) VALUES (:uid) RETURNING id, title, created_at"),
+        {"uid": current_user.id}
+    )
+    db.commit()
+    row = result.fetchone()
+    return ChatOut(id=row[0], title=row[1], created_at=row[2])
+
+
+@router.get('/chats', response_model=list[ChatOut])
+def list_chats(current_user: UserOut = Depends(get_current_user), db=Depends(get_db)):
+    result = db.execute(
+        text("SELECT id, title, created_at FROM chats WHERE user_id = :uid ORDER BY created_at DESC"),
+        {"uid": current_user.id}
+    )
+    return [ChatOut(id=r[0], title=r[1], created_at=r[2]) for r in result.fetchall()]
+
+
+@router.delete('/chats/{chat_id}')
+def delete_chat(chat_id: int, current_user: UserOut = Depends(get_current_user), db=Depends(get_db)):
+    # Проверяем владение
+    row = db.execute(
+        text("SELECT id FROM chats WHERE id = :cid AND user_id = :uid"),
+        {"cid": chat_id, "uid": current_user.id}
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    thread_id = f"chat_{chat_id}"
+    # Удаляем LangGraph checkpoints для этого чата
+    db.execute(text("DELETE FROM checkpoint_writes WHERE thread_id = :tid"), {"tid": thread_id})
+    db.execute(text("DELETE FROM checkpoint_blobs WHERE thread_id = :tid"), {"tid": thread_id})
+    db.execute(text("DELETE FROM checkpoints WHERE thread_id = :tid"), {"tid": thread_id})
+    # Удаляем чат (CASCADE удалит messages автоматически)
+    db.execute(text("DELETE FROM chats WHERE id = :cid"), {"cid": chat_id})
+    db.commit()
+    return {"message": "Chat deleted"}
+
+
+@router.get('/chats/{chat_id}/messages', response_model=list[MessageOut])
+def get_chat_messages(chat_id: int, current_user: UserOut = Depends(get_current_user), db=Depends(get_db)):
+    # Проверяем владение
+    row = db.execute(
+        text("SELECT id FROM chats WHERE id = :cid AND user_id = :uid"),
+        {"cid": chat_id, "uid": current_user.id}
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    result = db.execute(
+        text("SELECT role, content, created_at FROM messages WHERE chat_id = :cid ORDER BY created_at ASC"),
+        {"cid": chat_id}
+    )
+    return [MessageOut(role=r[0], content=r[1], created_at=r[2]) for r in result.fetchall()]
+
+
 # --- Auth Routes ---
 
 @router.post('/auth/signup', response_model=UserOut)
@@ -247,7 +345,7 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
     """
     Эндпоинт совместим со Swagger UI (форма) и обычными запросами.
     form_data.username содержит email пользователя.
-    Токен устанавливается как HttpOnly cookie — не возвращается в теле ответа.
+    Токены устанавливаются как HttpOnly cookie — не возвращаются в теле ответа.
     """
     email = form_data.username
     password = form_data.password
@@ -265,11 +363,12 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
         data={'sub': user[1], 'user_id': user[0]},
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
+    refresh_tok = create_refresh_token({'sub': user[1], 'user_id': user[0]})
 
+    # access_token: короткоживущий (30 мин), отправляется с каждым запросом (path=/)
     # HttpOnly: JS не может прочитать cookie → XSS не украдёт токен.
     # SameSite=Lax: браузер не отправляет cookie на cross-site POST → CSRF-защита.
     # Secure: только HTTPS (False в dev, настраивается через COOKIE_SECURE в .env).
-    # max_age: браузер автоматически удаляет cookie после истечения токена.
     response.set_cookie(
         key="access_token",
         value=access_token,
@@ -278,7 +377,61 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
         samesite="lax",
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
+    # refresh_token: долгоживущий (30 дней), отправляется ТОЛЬКО к /auth/refresh (path=).
+    # path=/api/v1/auth/refresh: браузер не отправляет этот cookie ни к каким другим endpoint-ам —
+    # refresh token не утечёт с обычными запросами к /analyze, /auth/me и т.д.
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_tok,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        path="/api/v1/auth/refresh",
+    )
     return {"message": "Login successful"}
+
+
+@router.post('/auth/refresh')
+def refresh_tokens(response: Response, refresh_token: str = Cookie(default=None)):
+    """
+    Обновляет access_token по действующему refresh_token.
+    Token rotation: выдаётся новый refresh_token, активный пользователь не вылетает никогда.
+    30 дней бездействия → перелогин.
+    """
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail='No refresh token')
+    payload = decode_token(refresh_token)
+    if not payload or payload.get('type') != 'refresh':
+        raise HTTPException(status_code=401, detail='Invalid refresh token')
+
+    email = payload.get('sub')
+    user_id = payload.get('user_id')
+
+    new_access = create_access_token(
+        {'sub': email, 'user_id': user_id},
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    new_refresh = create_refresh_token({'sub': email, 'user_id': user_id})
+
+    response.set_cookie(
+        key="access_token",
+        value=new_access,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        path="/api/v1/auth/refresh",
+    )
+    return {"message": "Tokens refreshed"}
 
 
 @router.post('/auth/logout')
@@ -286,6 +439,7 @@ def logout(response: Response):
     # JS не может удалить HttpOnly cookie — только сервер может.
     # delete_cookie ставит Max-Age=0: браузер немедленно удаляет cookie.
     response.delete_cookie(key="access_token", samesite="lax")
+    response.delete_cookie(key="refresh_token", samesite="lax", path="/api/v1/auth/refresh")
     return {"message": "Logged out"}
 
 

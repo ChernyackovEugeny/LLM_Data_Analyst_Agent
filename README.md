@@ -222,7 +222,94 @@ The `/analyze/stream` endpoint emits the following events:
 {"type": "error", "message": "..."}                    // error occurred
 ```
 
+## Architecture
+
+### System Overview
+
+```mermaid
+graph TB
+    subgraph Browser["Browser"]
+        React["React 19 + Vite\nSPA (Tailwind CSS)"]
+    end
+
+    subgraph Compose["Docker Compose"]
+        subgraph FE["frontend"]
+            nginx["nginx\nReverse Proxy + SPA routing"]
+        end
+
+        subgraph BE["backend"]
+            FastAPI["FastAPI + Uvicorn"]
+            Auth["Auth\nHttpOnly JWT Cookies"]
+            subgraph LG["LangGraph Agent"]
+                AgentNode["Agent Node\nDeepSeek LLM"]
+                ToolNode["Tool Node"]
+            end
+            AgentNode -->|tool_calls| ToolNode
+            ToolNode -->|messages| AgentNode
+        end
+
+        subgraph DB["db"]
+            PG[("PostgreSQL 16\nusers · chats · messages\ncheckpoints · csv_u{id}")]
+        end
+
+        subgraph SB["sandbox"]
+            Sandbox["Python Sandbox\npandas · matplotlib · numpy\nnetwork disabled · 512 MB RAM"]
+        end
+    end
+
+    subgraph Ext["External"]
+        LLM["DeepSeek API\nOpenAI-compatible"]
+    end
+
+    React -- "HTTP / SSE" --> nginx
+    nginx -- "/api/ proxy" --> FastAPI
+    FastAPI --> Auth
+    FastAPI --> LG
+    LG -- "LangGraph checkpoints\nSQLAlchemy ORM" --> PG
+    ToolNode -- "execute_sql_query\nread-only role" --> PG
+    ToolNode -- "execute_python_code\nDocker-out-of-Docker" --> Sandbox
+    AgentNode -- "chat completions" --> LLM
+```
+
+### Agent Pipeline
+
+```mermaid
+flowchart TD
+    U(["User message\n(natural language)"])
+    U --> API["FastAPI /analyze/stream\nSSE endpoint"]
+    API --> Persist["Save user message\nto DB (chat history)"]
+    Persist --> Schema["get_database_schema(user_id)\ndynamic schema — sees uploaded CSV"]
+    Schema --> Prompt["build_agent_prompt(schema)\nsystem prompt + LangGraph memory"]
+    Prompt --> LLM["DeepSeek LLM\nwith bound tools"]
+
+    LLM --> D{tool_calls?}
+
+    D -- "Yes: execute_sql_query" --> SQL["SQL Tool\nAST strip-comments\n+ SELECT-only allowlist\n+ read-only PG role"]
+    D -- "Yes: execute_python_code" --> Py["Python Tool\nAST import validation\n→ Docker sandbox\n(network off, 512 MB, 30 s)"]
+
+    SQL --> Back(["Back to Agent Node"])
+    Py --> Back
+    Back --> LLM
+
+    D -- No --> Done["SSE event: done\nfinal answer saved to DB"]
+    Done --> FE["React Frontend\nMarkdown · tables · inline charts\nChart lightbox"]
+
+    style SQL fill:#FFF9C4,stroke:#F57F17
+    style Py fill:#FFF9C4,stroke:#F57F17
+    style LLM fill:#E3F2FD,stroke:#1565C0
+    style FE fill:#E8F5E9,stroke:#2E7D32
+```
+
+### Security layers
+
+| Layer | SQL tool | Python tool |
+|---|---|---|
+| **Layer 1** | Strip comments → SELECT-only allowlist + no semicolons + no `SELECT INTO` | AST parse → blocked imports (`os`, `sys`, `subprocess`, …) + blocked calls (`exec`, `eval`) |
+| **Layer 2** | `analyst_readonly` PostgreSQL role — DDL/DML refused at DB level | Docker sandbox — network disabled, 512 MB RAM, 0.5 CPU, no env secrets |
+
 ## How It Works
+
+### Request flow
 
 ```
 User message
@@ -237,8 +324,8 @@ LangGraph Agent Node
   └─ Calls DeepSeek LLM
      │
      ├─ Tool call? ──► Tool Node
-     │                  ├─ execute_sql_query → PostgreSQL
-     │                  └─ execute_python_code → subprocess (matplotlib)
+     │                  ├─ execute_sql_query → PostgreSQL (read-only)
+     │                  └─ execute_python_code → Docker sandbox (matplotlib)
      │                        │
      │                  Back to Agent Node (loop)
      │

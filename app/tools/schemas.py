@@ -1,6 +1,9 @@
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 
-from app.config import settings
+# Используем уже созданный engine из database.py (с готовым connection pool).
+# Создавать новый engine на каждый вызов — утечка: каждый create_engine()
+# открывает новый connection pool, соединения накапливаются и не освобождаются.
+from app.database.database import engine
 
 
 def get_database_schema(user_id: int | None = None) -> str:
@@ -13,7 +16,6 @@ def get_database_schema(user_id: int | None = None) -> str:
       - показывает его CSV-таблицу (csv_u{user_id}), если она существует
       - скрывает CSV-таблицы других пользователей (csv_u1, csv_u2...)
     """
-    engine = create_engine(settings.DATABASE_URL)
     inspector = inspect(engine)
     all_tables = inspector.get_table_names()
 
