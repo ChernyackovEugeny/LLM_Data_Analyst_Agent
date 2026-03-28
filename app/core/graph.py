@@ -2,7 +2,6 @@ from functools import partial
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.memory import MemorySaver
 
 from app.config import settings
 
@@ -56,5 +55,8 @@ graph.add_conditional_edges(
 graph.add_edge("tools", "agent")
 
 # --- Компиляция ---
-checkpointer = MemorySaver()
-app_graph = graph.compile(checkpointer=checkpointer)
+# raw_graph — несобранный граф. Компилируется в app/app.py (lifespan)
+# с AsyncPostgresSaver для персистентной истории диалогов.
+# app_graph инициализируется там же и переприсваивается через модульную ссылку.
+raw_graph = graph
+app_graph = None  # заполняется lifespan перед обработкой первого запроса

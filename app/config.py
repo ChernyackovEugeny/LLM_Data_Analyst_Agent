@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # Имя Docker-образа для sandbox-контейнеров.
     SANDBOX_IMAGE_NAME: str = "analyst-sandbox:latest"
 
+    # --- Очистка static/plots/ ---
+    # PNG-файлы старше этого порога удаляются при старте бэкенда.
+    # 0 = не удалять PNG автоматически.
+    # Через .env можно увеличить: PLOTS_MAX_AGE_HOURS=48
+    PLOTS_MAX_AGE_HOURS: int = 24
+
     # Конфигурация: откуда читать .env
     model_config = SettingsConfigDict(
         env_file=".env",

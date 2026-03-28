@@ -11,7 +11,7 @@ import pandas as pd
 from app.database.database import engine, get_db
 from app.auth.auth import get_password_hash, verify_password, create_access_token, decode_token
 from app.models.schemas import UserCreate, UserLogin, UserOut, AnalyzeRequest, AnalyzeResponse, UploadResponse
-from app.core.graph import app_graph
+from app.core import graph as graph_module
 from app.config import settings
 
 # Максимальный размер загружаемого CSV-файла — 10 МБ
@@ -57,7 +57,7 @@ async def analyze_endpoint(
 
         # Запускаем граф агента
         # invoke ждет завершения всего цикла (Agent -> Tool -> Agent -> END)
-        result = app_graph.invoke(inputs, config=config)
+        result = graph_module.app_graph.invoke(inputs, config=config)
 
         # Извлекаем ответ
         # После завершения работы последнее сообщение в списке — это ответ AI
@@ -100,7 +100,7 @@ async def analyze_stream_endpoint(
         try:
             # astream с mode="updates" даёт словарь {имя_узла: изменения_стейта}
             # после каждого выполненного узла графа
-            async for update in app_graph.astream(inputs, config=config, stream_mode="updates"):
+            async for update in graph_module.app_graph.astream(inputs, config=config, stream_mode="updates"):
                 for node_name, state_update in update.items():
 
                     if node_name == "agent":
