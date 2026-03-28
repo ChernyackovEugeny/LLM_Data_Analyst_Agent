@@ -25,12 +25,16 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // Если сервер вернул 401 (Unauthorized)
     if (error.response && error.response.status === 401) {
-      // Удаляем токен
-      localStorage.removeItem('token');
-      // Перенаправляем на логин
-      window.location.href = '/login';
+      // Не делаем редирект для /auth/login и /auth/signup:
+      // там 401 = неверный пароль, а не истёкшая сессия.
+      // Без этой проверки пользователь при ошибке входа видит
+      // не сообщение "Неверный пароль", а пустую форму после перезагрузки.
+      const isAuthEndpoint = error.config?.url?.includes('/auth/');
+      if (!isAuthEndpoint) {
+        localStorage.removeItem('token');
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }

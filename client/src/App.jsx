@@ -4,8 +4,23 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import Dashboard from './pages/Dashboard';
 
+// Проверяет что токен существует И ещё не истёк.
+// JWT содержит поле exp (Unix timestamp) прямо в base64-payload.
+// Без этой проверки пользователь с просроченным токеном видит dashboard,
+// а не форму входа — потому что localStorage.getItem('token') всё ещё возвращает значение.
+function isTokenValid() {
+  const token = localStorage.getItem('token');
+  if (!token) return false;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.exp * 1000 > Date.now();
+  } catch {
+    return false;
+  }
+}
+
 function App() {
-  const [isAuth, setIsAuth] = useState(!!localStorage.getItem('token'));
+  const [isAuth, setIsAuth] = useState(isTokenValid);
 
   const handleLogout = () => {
     localStorage.removeItem('token');

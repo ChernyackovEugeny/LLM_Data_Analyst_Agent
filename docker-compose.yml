@@ -8,10 +8,18 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      # Передаём пароль readonly-пользователя в init-скрипт.
+      # Скрипт читает его через $READONLY_DB_PASSWORD — пароль не хранится в git.
+      READONLY_DB_PASSWORD: ${READONLY_DB_PASSWORD}
     ports:
       - "5432:5432"   # открыт для удобства подключения через DBeaver / pgAdmin
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Init-скрипт запускается автоматически при ПЕРВОМ старте (пустой postgres_data).
+      # Создаёт пользователя analyst_readonly с правами только на SELECT.
+      # Для существующих деплоев — выполни вручную:
+      #   docker exec -i llm_agent_db bash < docker/init-readonly-user.sh
+      - ./docker/init-readonly-user.sh:/docker-entrypoint-initdb.d/01-readonly-user.sh:ro
     healthcheck:
       # Ждём пока PostgreSQL готов принимать соединения
       test: ["CMD-SHELL", "pg_isready -U admin -d analyst_db"]
@@ -30,8 +38,22 @@ services:
       # Переопределяем DATABASE_URL: в Docker PostgreSQL доступен по имени сервиса "db",
       # а не "localhost" как в локальной разработке
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Read-only подключение для SQL-инструмента агента.
+      # analyst_readonly имеет только SELECT — DDL/DML отклоняется на уровне БД.
+      READONLY_DATABASE_URL: postgresql+psycopg2://analyst_readonly:${READONLY_DB_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Имя Docker volume для графиков: используется python_tool.py при запуске sandbox.
+      # Значение = {COMPOSE_PROJECT_NAME}_plots_data (задан в .env).
+      PLOTS_VOLUME_NAME: ${COMPOSE_PROJECT_NAME}_plots_data
+      SANDBOX_IMAGE_NAME: analyst-sandbox:latest
+      # Включить Docker sandbox для Python-кода (только в production/docker-compose).
+      USE_SANDBOX: "true"
     volumes:
       - plots_data:/app/static/plots    # графики сохраняются между перезапусками контейнера
+      # Docker socket для запуска sandbox-контейнеров (Docker-out-of-Docker).
+      # ВАЖНО: доступ к сокету даёт backend-у права запускать контейнеры от имени Docker-демона.
+      # Это приемлемо т.к. backend — наш доверенный код, а sandbox-контейнеры ограничены
+      # (network_disabled, mem_limit, без env-переменных).
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:
         condition: service_healthy      # бэкенд стартует только после того как postgres готов
@@ -46,6 +68,19 @@ services:
       - "80:80"             # приложение доступно на http://localhost
     depends_on:
       - backend
+
+  # Сервис существует ТОЛЬКО как build-target для образа sandbox.
+  # profiles: ["sandbox"] → не запускается при docker compose up.
+  # Сборка: docker compose build sandbox  (один раз перед первым запуском)
+  # Образ analyst-sandbox:latest должен быть собран до первого использования
+  # инструмента execute_python_code.
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: analyst-sandbox:latest
+    profiles:
+      - sandbox
 
 volumes:
   postgres_data:
