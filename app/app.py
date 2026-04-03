@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     # *.png старше PLOTS_MAX_AGE_HOURS — удаляем по возрасту.
     # PNG хранить вечно не нужно: они ссылаются из истории диалогов,
     # но старые диалоги и так недоступны через UI.
-    # PLOTS_MAX_AGE_HOURS=0 в .env отключает очистку PNG.
+    # PLOTS_MAX_AGE_HOURS=0 в .env отключает очистку PNG и CSV.
     if settings.PLOTS_MAX_AGE_HOURS > 0:
         cutoff = time.time() - settings.PLOTS_MAX_AGE_HOURS * 3600
         removed = 0
@@ -59,6 +59,19 @@ async def lifespan(app: FastAPI):
                 pass
         if removed:
             logger.info(f"Очищено {removed} устаревших PNG из {plots_dir}")
+
+        # *.csv в results/ — результаты SQL-запросов. Чистим по тому же порогу.
+        results_dir = os.path.join(plots_dir, "results")
+        removed_csv = 0
+        for f in glob.glob(os.path.join(results_dir, "*.csv")):
+            try:
+                if os.path.getmtime(f) < cutoff:
+                    os.remove(f)
+                    removed_csv += 1
+            except OSError:
+                pass
+        if removed_csv:
+            logger.info(f"Очищено {removed_csv} устаревших CSV из {results_dir}")
 
     # -------------------------------------------------------------------------
     # 2. AsyncPostgresSaver

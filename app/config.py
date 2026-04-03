@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # Имя Docker-образа для sandbox-контейнеров.
     SANDBOX_IMAGE_NAME: str = "analyst-sandbox:latest"
 
+    # --- Память агента (Summarization + Window) ---
+    # Количество сообщений в state, при превышении которого срабатывает суммаризация.
+    # Считаются все сообщения: HumanMessage, AIMessage, ToolMessage.
+    SUMMARY_THRESHOLD: int = 20
+
+    # Сколько последних сообщений оставить в state после суммаризации (verbatim).
+    # Эти сообщения LLM видит полностью. Остальные — только через summary.
+    SUMMARY_KEEP_LAST: int = 8
+
     # --- Очистка static/plots/ ---
     # PNG-файлы старше этого порога удаляются при старте бэкенда.
     # 0 = не удалять PNG автоматически.

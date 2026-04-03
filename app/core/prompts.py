@@ -45,6 +45,10 @@ def build_agent_prompt(db_schema: str) -> ChatPromptTemplate:
     12. Доступные библиотеки: pandas (pd), matplotlib.pyplot (plt), numpy (np), json, math,
         statistics, datetime, re, collections, itertools.
     13. Переменные окружения недоступны — не обращайся к os.environ.
+    14. Результаты SQL-запросов сохраняются в CSV-файлы — в ToolMessage ты видишь только путь и превью.
+        Для анализа данных в Python ВСЕГДА загружай данные из файла:
+            df = pd.read_csv('путь_из_результата_sql')
+        ЗАПРЕЩЕНО хардкодить данные прямо в Python-коде — используй путь к файлу.
     """
 
     return ChatPromptTemplate([
